@@ -11,6 +11,33 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import { electivasCatalogo, categoriasElectivas, electivaPorId, CREDITOS_ELECTIVAS_REQ } from './data/electivas.js';
 
+const PASO_X = 400;        // separacion entre cuatrimestres
+const ANCHO_CARD = 280;    // ancho de una card de materia
+const CUATS = 10;
+
+// Nodos de fondo: no se arrastran, no se seleccionan y no reciben clicks.
+function ZonaAno({ data }) {
+  return (
+    <div className="zona-ano" style={{ width: data.w, height: data.h }}>
+      <div className="zona-ano-tag">{data.etiqueta}</div>
+      {!data.ultimo && <div className="zona-ano-linea" />}
+    </div>
+  );
+}
+
+function ZonaIntercambio({ data }) {
+  return (
+    <div className="zona-intercambio" style={{ width: data.w, height: data.h }}>
+      <div className="zona-intercambio-tag">
+        ✈ INTERCAMBIO · C{data.cuat} · {data.cantidad} materia{data.cantidad === 1 ? '' : 's'}
+      </div>
+    </div>
+  );
+}
+
+// Definido afuera del componente: si se recrea en cada render, React Flow avisa.
+const nodeTypes = { zonaAno: ZonaAno, zonaIntercambio: ZonaIntercambio };
+
 const cuatrimestreColores = ['#ff4d4d', '#ff944d', '#33cc33', '#00c9c9ff', '#9966ff', '#ff3399', '#00cccc', '#ff0055', '#00ffa2', '#ffffff'];
 const TOTAL_CREDITOS_CARRERA = 221;
 
@@ -156,9 +183,11 @@ function MapaCivil() {
   const [showElectivas, setShowElectivas] = useState(false); // Nuevo: panel de electivas
   const [electivas, setElectivas] = useState({});            // Nuevo: { id: { cuat, cred } }
   const [busqueda, setBusqueda] = useState('');
+  const [intercambio, setIntercambio] = useState(null); // cuatrimestre marcado como intercambio
   const { fitView } = useReactFlow();
 
   const onNodeDoubleClick = useCallback((event, node) => {
+    if (String(node.id).startsWith('__')) return;
     if (node.data?.esHub) { setShowElectivas(true); return; }
     setAprobadas(prev => {
       const nuevoEstado = { ...prev, [node.id]: !prev[node.id] };
@@ -246,6 +275,7 @@ function MapaCivil() {
   useEffect(() => {
     setAprobadas(JSON.parse(localStorage.getItem('prog-v21') || '{}'));
     setElectivas(JSON.parse(localStorage.getItem('elec-v1') || '{}'));
+    setIntercambio(JSON.parse(localStorage.getItem('intercambio-v1') || 'null'));
     setTimeout(() => fitView({ padding: 0.15 }), 400);
   }, [fitView]);
 
@@ -273,6 +303,75 @@ function MapaCivil() {
     const currentPos = JSON.parse(localStorage.getItem('pos-v21') || '{}');
     currentPos[node.id] = node.position;
     localStorage.setItem('pos-v21', JSON.stringify(currentPos));
+  }, []);
+
+  // Alto que tiene que cubrir el fondo: hasta la card mas baja de todo el mapa
+  const altoMapa = useMemo(() => {
+    const max = nodes.reduce((m, nd) => Math.max(m, nd.position.y + (nd.height || 150)), 0);
+    return Math.max(max + 90, 720);
+  }, [nodes]);
+
+  const rangoIntercambio = intercambio
+    ? { x0: intercambio * PASO_X - 30, x1: intercambio * PASO_X - 30 + ANCHO_CARD + 60 }
+    : null;
+
+  // Una materia esta "adentro" si su centro cae dentro del recuadro
+  const materiasEnIntercambio = useMemo(() => {
+    if (!rangoIntercambio) return [];
+    return nodes.filter(nd => {
+      if (nd.data?.esHub) return false;
+      const centro = nd.position.x + ANCHO_CARD / 2;
+      return centro >= rangoIntercambio.x0 && centro <= rangoIntercambio.x1;
+    });
+  }, [nodes, rangoIntercambio?.x0, rangoIntercambio?.x1]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const nodosFondo = useMemo(() => {
+    const fondo = [];
+
+    // Una banda por año, cada una cubre dos cuatrimestres
+    for (let ano = 1; ano <= CUATS / 2; ano++) {
+      const cuatIzq = ano * 2 - 1;
+      fondo.push({
+        id: `__ano-${ano}`,
+        type: 'zonaAno',
+        draggable: false, selectable: false, zIndex: 1,
+        // React Flow deja el nodo en visibility:hidden hasta que lo mide;
+        // como no pasamos sus cambios de dimension, le damos el tamano ya hecho.
+        width: PASO_X + ANCHO_CARD + 90, height: altoMapa + 115,
+        style: { pointerEvents: 'none' },
+        position: { x: cuatIzq * PASO_X - 45, y: -115 },
+        data: {
+          w: PASO_X + ANCHO_CARD + 90,
+          h: altoMapa + 115,
+          etiqueta: `${ano}° AÑO`,
+          ultimo: ano === CUATS / 2,
+        },
+      });
+    }
+
+    if (rangoIntercambio) {
+      fondo.push({
+        id: '__intercambio',
+        type: 'zonaIntercambio',
+        draggable: false, selectable: false, zIndex: 2,
+        width: ANCHO_CARD + 60, height: altoMapa + 65,
+        style: { pointerEvents: 'none' },
+        position: { x: rangoIntercambio.x0, y: -65 },
+        data: {
+          w: ANCHO_CARD + 60,
+          h: altoMapa + 65,
+          cuat: intercambio,
+          cantidad: materiasEnIntercambio.length,
+        },
+      });
+    }
+
+    return fondo;
+  }, [altoMapa, intercambio, rangoIntercambio?.x0, materiasEnIntercambio.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const cambiarIntercambio = useCallback((cuat) => {
+    setIntercambio(cuat);
+    localStorage.setItem('intercambio-v1', JSON.stringify(cuat));
   }, []);
 
   const stats = useMemo(() => {
@@ -369,6 +468,35 @@ function MapaCivil() {
         .btn-panel-open { background: #222; color: #fff; border: 1px solid #444; padding: 10px 20px; border-radius: 8px; cursor: pointer; position: absolute; top: 20px; left: 20px; z-index: 10; font-weight: 700; }
         .disp-item { background: #1a1a1a; padding: 12px; border-radius: 8px; margin-bottom: 8px; border-left: 4px solid #d38901; font-size: 14px; }
         
+        /* --- FONDO: bandas de año y zona de intercambio --- */
+        .zona-ano { position: relative; pointer-events: none; }
+        .zona-ano-tag {
+          position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+          color: #2e2e2e; font-size: 40px; font-weight: 900; letter-spacing: 10px; white-space: nowrap;
+        }
+        .zona-ano-linea {
+          position: absolute; top: 0; right: 0; height: 100%;
+          border-right: 2px dashed #232323;
+        }
+        .zona-intercambio {
+          position: relative; pointer-events: none;
+          border: 3px dashed #38bdf8; border-radius: 26px;
+          background: rgba(56, 189, 248, 0.07);
+          box-shadow: inset 0 0 90px rgba(56, 189, 248, 0.13);
+        }
+        .zona-intercambio-tag {
+          position: absolute; top: -15px; left: 50%; transform: translateX(-50%);
+          background: #38bdf8; color: #00141f; white-space: nowrap;
+          font-size: 12px; font-weight: 900; letter-spacing: 1px;
+          padding: 5px 15px; border-radius: 20px;
+        }
+
+        .sp-select {
+          width: 100%; background: #151515; border: 1px solid #2a2a2a; border-radius: 8px;
+          padding: 10px 12px; color: #fff; font-size: 13px; outline: none; margin-top: 10px;
+        }
+        .sp-select:focus { border-color: #38bdf8; }
+
         .ev-row { display: flex; justify-content: space-between; border-bottom: 1px solid #222; padding: 10px 0; font-size: 15px; }
 
         /* La atribucion de React Flow queda a la vista ahora que el canvas
@@ -451,7 +579,26 @@ function MapaCivil() {
           </div>
           <p style={{ fontSize: '13px', color: '#888' }}>{stats.creds} / {TOTAL_CREDITOS_CARRERA} Créditos</p>
         </div>
-        <div style={{ marginTop: '40px' }}>
+        <div style={{ marginTop: '35px' }}>
+          <h3 style={{ fontSize: '14px', color: '#38bdf8', textTransform: 'uppercase', margin: 0 }}>Intercambio</h3>
+          <select
+            className="sp-select"
+            value={intercambio ?? ''}
+            onChange={e => cambiarIntercambio(e.target.value ? Number(e.target.value) : null)}
+          >
+            <option value="">Sin intercambio</option>
+            {Array.from({ length: CUATS }, (_, i) => i + 1).map(c => (
+              <option key={c} value={c}>Cuatrimestre {c}</option>
+            ))}
+          </select>
+          <p style={{ fontSize: '12px', color: '#666', lineHeight: 1.5, marginTop: '10px' }}>
+            {intercambio
+              ? `${materiasEnIntercambio.length} materia${materiasEnIntercambio.length === 1 ? '' : 's'} dentro del recuadro. Arrastrá las que quieras cursar afuera.`
+              : 'Marcá un cuatrimestre para encuadrarlo y armar ahí las materias del intercambio.'}
+          </p>
+        </div>
+
+        <div style={{ marginTop: '35px' }}>
           <h3 style={{ fontSize: '14px', color: '#d38901', textTransform: 'uppercase' }}>Disponibles</h3>
           {materiasDisponibles.map(m => (
             <div key={m.id} className="disp-item">
@@ -602,7 +749,8 @@ function MapaCivil() {
       )}
 
       <ReactFlow
-        nodes={nodes.map(n => {
+        nodeTypes={nodeTypes}
+        nodes={[...nodosFondo, ...nodes.map(n => {
           const isTarget = hoverNode && correlativasVisibles.some(e => e.source === hoverNode && e.target === n.id);
           const isSource = ancestors.has(n.id);
           const isFaded = (ramaFiltro && ramaFiltro !== n.data.rama);
@@ -627,6 +775,7 @@ function MapaCivil() {
 
           return {
             ...n,
+            zIndex: 10,
             className: `materia-card ${n.data.esHub ? 'hub' : ''} ${n.data.esElectiva ? 'electiva' : ''} ${aprobadas[n.id] ? 'aprobada' : ''} ${hClass} ${isFaded ? 'fade' : ''} ${ramaFiltro === n.data.rama ? 'highlight' : ''}`,
             style: {
               ...n.style, boxShadow,
@@ -653,16 +802,17 @@ function MapaCivil() {
               </>
             )}
           };
-        })}
+        })]}
         edges={edges}
-        onNodesChange={(c) => setNodes(nds => applyNodeChanges(c, nds))}
+        onNodesChange={(c) => setNodes(nds => applyNodeChanges(c.filter(ch => !String(ch.id).startsWith('__')), nds))}
         onNodeDragStop={onNodeDragStop}
         onNodeClick={(e, n) => {
+          if (String(n.id).startsWith('__')) return;
           if (n.data?.esHub) { setShowElectivas(true); setSelectedNode(null); return; }
           setSelectedNode(n.id);
         }}
         onNodeDoubleClick={onNodeDoubleClick}        
-        onNodeMouseEnter={(_, n) => setHoverNode(n.id)}
+        onNodeMouseEnter={(_, n) => { if (!String(n.id).startsWith('__')) setHoverNode(n.id); }}
         onNodeMouseLeave={() => setHoverNode(null)}
         fitView
       >
