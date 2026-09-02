@@ -327,12 +327,13 @@ function MapaCivil() {
   return (
     <div className="main-container">
       <style>{`
-        .main-container { width: 100vw; height: 100vh; background: #000; overflow: hidden; font-family: 'Inter', sans-serif; }
+        .main-container { position: fixed; inset: 0; background: #000; overflow: hidden; font-family: 'Inter', sans-serif; }
         .materia-card { 
           background: #0d0d0d; color: #fff; padding: 25px 10px; border-radius: 12px; 
           width: 280px; text-align: center; border: 4px solid #333; cursor: grab;
           transition: all 0.3s ease;
         }
+        .materia-card.electiva { border-style: dashed !important; background: #14100a; }
         .materia-card.aprobada { opacity: 0.5; background: #064e3b; border-color: #10b981 !important; }
         .materia-card.hub { border-style: dashed !important; background: #14100a; cursor: pointer; }
         .materia-card.hub:hover { background: #1f1809; }
@@ -346,14 +347,16 @@ function MapaCivil() {
           position: absolute; top: 0; left: 0; height: 100%; z-index: 1000;
           background: rgba(10,10,10,0.98); border-right: 1px solid #333;
           transform: translateX(${isOpen ? '0' : '-100%'});
-          transition: transform 0.4s ease-out; width: 320px; padding: 30px; color: #fff; overflow-y: auto;
+          transition: transform 0.4s ease-out; width: 320px; max-width: 90vw; padding: 30px; color: #fff; overflow-y: auto;
+          box-sizing: border-box; overscroll-behavior: contain;
         }
 
         .detail-panel {
           position: absolute; top: 0; right: 0; height: 100%; z-index: 1000;
           background: #0d0d0d; border-left: 1px solid #333;
           transform: translateX(${selectedNode ? '0' : '100%'});
-          transition: transform 0.3s ease; width: 340px; padding: 30px; color: #fff;
+          transition: transform 0.3s ease; width: 340px; max-width: 90vw; padding: 30px; color: #fff;
+          box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain;
         }
 
         .filtros-top { 
@@ -368,6 +371,11 @@ function MapaCivil() {
         
         .ev-row { display: flex; justify-content: space-between; border-bottom: 1px solid #222; padding: 10px 0; font-size: 15px; }
 
+        /* La atribucion de React Flow queda a la vista ahora que el canvas
+           encuadra exacto: la integramos al tema oscuro en vez de ocultarla. */
+        .react-flow__attribution { background: rgba(0,0,0,0.55); padding: 2px 5px; }
+        .react-flow__attribution a { color: #3a3a3a; font-size: 9px; }
+
         /* --- PANEL DE ELECTIVAS --- */
         .elec-panel {
           position: absolute; top: 0; right: 0; height: 100%; z-index: 1100;
@@ -375,8 +383,14 @@ function MapaCivil() {
           transform: translateX(${showElectivas ? '0' : '100%'});
           transition: transform 0.35s cubic-bezier(.4,0,.2,1);
           padding: 26px 24px 60px; color: #fff; overflow-y: auto;
+          box-sizing: border-box; overscroll-behavior: contain;
           box-shadow: -20px 0 60px rgba(0,0,0,0.8);
         }
+        /* Los hijos tambien miden con el padding incluido: si no, un input
+           al 100% se pasa del ancho util y aparece scroll horizontal. */
+        .side-panel, .side-panel *, .detail-panel, .detail-panel *, .elec-panel, .elec-panel * { box-sizing: border-box; }
+        .side-panel, .detail-panel, .elec-panel { overflow-x: hidden; }
+
         .elec-head { display: flex; justify-content: space-between; align-items: flex-start; }
         .elec-x { background: none; border: none; color: #666; font-size: 22px; cursor: pointer; line-height: 1; }
         .elec-x:hover { color: #fff; }
@@ -560,7 +574,9 @@ function MapaCivil() {
                         <label>
                           Cuatrimestre
                           <select value={sel.cuat} onChange={e => cambiarCuatrimestre(el.id, Number(e.target.value))}>
-                            {[5, 6, 7, 8, 9, 10].map(c => <option key={c} value={c}>C{c}</option>)}
+                            {Array.from({ length: 10 }, (_, i) => i + 1).map(c => (
+                              <option key={c} value={c}>C{c}</option>
+                            ))}
                           </select>
                         </label>
                         <button className="elec-del" onClick={() => toggleElectiva(el)}>Quitar del mapa</button>
@@ -591,7 +607,11 @@ function MapaCivil() {
           const isSource = ancestors.has(n.id);
           const isFaded = (ramaFiltro && ramaFiltro !== n.data.rama);
           
-          let borderColor = isFaded ? '#111' : (ramaFiltro === n.data.rama ? RAMAS[n.data.rama].color : cuatrimestreColores[n.data.cuat - 1]);
+          let borderColor = isFaded
+            ? '#111'
+            : (ramaFiltro === n.data.rama || n.data.rama === 'ELECTIVA')
+              ? RAMAS[n.data.rama].color
+              : cuatrimestreColores[n.data.cuat - 1];
           let boxShadow = (ramaFiltro === n.data.rama) ? `0 0 40px ${RAMAS[n.data.rama].color}` : "none";
           let hClass = "";
 
@@ -607,7 +627,7 @@ function MapaCivil() {
 
           return {
             ...n,
-            className: `materia-card ${n.data.esHub ? 'hub' : ''} ${aprobadas[n.id] ? 'aprobada' : ''} ${hClass} ${isFaded ? 'fade' : ''} ${ramaFiltro === n.data.rama ? 'highlight' : ''}`,
+            className: `materia-card ${n.data.esHub ? 'hub' : ''} ${n.data.esElectiva ? 'electiva' : ''} ${aprobadas[n.id] ? 'aprobada' : ''} ${hClass} ${isFaded ? 'fade' : ''} ${ramaFiltro === n.data.rama ? 'highlight' : ''}`,
             style: {
               ...n.style, boxShadow,
               borderTopColor: borderColor,
