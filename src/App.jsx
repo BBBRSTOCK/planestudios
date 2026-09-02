@@ -9,6 +9,7 @@ import ReactFlow, {
   useReactFlow
 } from 'reactflow';
 import 'reactflow/dist/style.css';
+import { electivasCatalogo, categoriasElectivas, CREDITOS_ELECTIVAS_REQ } from './data/electivas.js';
 
 const cuatrimestreColores = ['#ff4d4d', '#ff944d', '#33cc33', '#00c9c9ff', '#9966ff', '#ff3399', '#00cccc', '#ff0055', '#00ffa2', '#ffffff'];
 const TOTAL_CREDITOS_CARRERA = 221;
@@ -22,7 +23,8 @@ const RAMAS = {
   VIAS: { nombre: 'Vías y Geotecnia', color: '#ff944d' },
 
   HIDRAULICO: { nombre: 'Hidráulico', color: '#00d4ff' },
-  AMBIENTAL: { nombre: 'Ambiental', color: '#33cc33' }
+  AMBIENTAL: { nombre: 'Ambiental', color: '#33cc33' },
+  ELECTIVA: { nombre: 'Electivas', color: '#d38901' }
 };
 
 // --- LISTA DE MATERIAS (Con Rama y Evaluación) ---
@@ -75,7 +77,7 @@ const listaMaterias = [
   { id: '67.21', cuat: 9, nombre: 'Organización y Conducción de Obras',       cred: 3, rama: 'GESTION', ev: { p: 1, tp: 1, f: true, pro: false } },
   { id: '67.22', cuat: 9, nombre: 'Auditorías Ambientales',                   cred: 3, rama: 'AMBIENTAL', ev: { p: 1, tp: 1, f: true, pro: true } },
   { id: '94.65', cuat: 10, nombre: 'PPS',                                     cred: 0, reqCred: 144, rama: 'GESTION', ev: { p: 0, tp: 1, f: false, pro: false } },
-  { id: 'ELEC', cuat: 10, nombre: 'Electivas',                                cred: 30, rama: 'BASICAS', ev: { p: 0, tp: 0, f: false, pro: false } }
+  { id: 'ELEC', cuat: 10, nombre: 'Electivas',                                cred: 0, rama: 'ELECTIVA', esHub: true }
 ];
 
 const correlativasBase = [
@@ -125,6 +127,8 @@ const findRecursiveAncestors = (nodeId, edges, results = new Set()) => {
   return results;
 };
 
+const normalizar = (t) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
 const getDynamicColor = (sNode, tNode) => {
   const cuatSource = Math.round(sNode.position.x / 400);
   const cuatTarget = Math.round(tNode.position.x / 400);
@@ -142,41 +146,105 @@ function MapaCivil() {
   const [selectedNode, setSelectedNode] = useState(null); // Nuevo: Materia seleccionada
   const [ramaFiltro, setRamaFiltro] = useState(null); // Nuevo: Filtro de rama
   const [isOpen, setIsOpen] = useState(false);
+  const [showElectivas, setShowElectivas] = useState(false); // Nuevo: panel de electivas
+  const [electivas, setElectivas] = useState({});            // Nuevo: { id: { cuat, cred } }
+  const [busqueda, setBusqueda] = useState('');
   const { fitView } = useReactFlow();
-  const onNodeDoubleClick = useCallback((event, node) => {
-  setAprobadas(prev => {
-    const nuevoEstado = { ...prev, [node.id]: !prev[node.id] };
-    // Guardamos inmediatamente en el storage para no perder cambios
-    localStorage.setItem('prog-v21', JSON.stringify(nuevoEstado));
-    return nuevoEstado;
-  });
-}, []);
 
+  const onNodeDoubleClick = useCallback((event, node) => {
+    if (node.data?.esHub) { setShowElectivas(true); return; }
+    setAprobadas(prev => {
+      const nuevoEstado = { ...prev, [node.id]: !prev[node.id] };
+      // Guardamos inmediatamente en el storage para no perder cambios
+      localStorage.setItem('prog-v21', JSON.stringify(nuevoEstado));
+      return nuevoEstado;
+    });
+  }, []);
+
+  // --- ELECTIVAS: agregar / quitar / editar ---
+  const guardarElectivas = useCallback((next) => {
+    localStorage.setItem('elec-v1', JSON.stringify(next));
+    return next;
+  }, []);
+
+  const toggleElectiva = useCallback((el) => {
+    setElectivas(prev => {
+      const next = { ...prev };
+      if (next[el.id]) {
+        delete next[el.id];
+        const pos = JSON.parse(localStorage.getItem('pos-v21') || '{}');
+        delete pos[el.id];
+        localStorage.setItem('pos-v21', JSON.stringify(pos));
+        // si la sacamos del mapa, tambien limpiamos su estado de aprobada
+        setAprobadas(ap => {
+          if (!ap[el.id]) return ap;
+          const { [el.id]: _, ...resto } = ap;
+          localStorage.setItem('prog-v21', JSON.stringify(resto));
+          return resto;
+        });
+      } else {
+        next[el.id] = { cuat: 10, cred: el.cred };
+      }
+      return guardarElectivas(next);
+    });
+  }, [guardarElectivas]);
+
+  const editarElectiva = useCallback((id, campo, valor) => {
+    if (campo === 'cuat') {
+      // Se mueve de columna: olvidamos la posicion vieja y sacamos el nodo
+      // para que el efecto de sincronizacion lo vuelva a colocar donde va.
+      const pos = JSON.parse(localStorage.getItem('pos-v21') || '{}');
+      delete pos[id];
+      localStorage.setItem('pos-v21', JSON.stringify(pos));
+      setNodes(nds => nds.filter(nd => nd.id !== id));
+    }
+    setElectivas(prev => {
+      if (!prev[id]) return prev;
+      return guardarElectivas({ ...prev, [id]: { ...prev[id], [campo]: valor } });
+    });
+  }, [guardarElectivas]);
+
+  // Materias del plan + las electivas que el usuario eligio poner en el mapa
+  const materiasActivas = useMemo(() => {
+    const elegidas = Object.entries(electivas).map(([id, cfg]) => {
+      const base = electivasCatalogo.find(e => e.id === id);
+      if (!base) return null; // el catalogo cambio y esta electiva ya no existe
+      return { ...base, cuat: cfg.cuat, cred: cfg.cred, rama: 'ELECTIVA', esElectiva: true };
+    }).filter(Boolean);
+
+    return [...listaMaterias, ...elegidas].sort((a, b) =>
+      a.cuat !== b.cuat
+        ? a.cuat - b.cuat
+        : (a.esencial === b.esencial ? b.cred - a.cred : a.esencial ? -1 : 1)
+    );
+  }, [electivas]);
+
+  // Carga inicial del storage
+  useEffect(() => {
+    setAprobadas(JSON.parse(localStorage.getItem('prog-v21') || '{}'));
+    setElectivas(JSON.parse(localStorage.getItem('elec-v1') || '{}'));
+    setTimeout(() => fitView({ padding: 0.15 }), 400);
+  }, [fitView]);
+
+  // Sincroniza los nodos cuando cambian las materias activas, respetando posiciones
   useEffect(() => {
     const savedPos = JSON.parse(localStorage.getItem('pos-v21') || '{}');
-    const savedProg = JSON.parse(localStorage.getItem('prog-v21') || '{}');
-    setAprobadas(savedProg);
-
-    const initialNodes = [];
-    for (let c = 1; c <= 10; c++) {
-      const matsCuat = listaMaterias
-        .filter(m => m.cuat === c)
-        .sort((a, b) => (a.esencial === b.esencial ? b.cred - a.cred : a.esencial ? -1 : 1));
-
-      matsCuat.forEach((m, index) => {
-        initialNodes.push({
+    setNodes(prev => {
+      const posPrevias = Object.fromEntries(prev.map(nd => [nd.id, nd.position]));
+      const usadosPorCuat = {};
+      return materiasActivas.map(m => {
+        const index = usadosPorCuat[m.cuat] = (usadosPorCuat[m.cuat] ?? -1) + 1;
+        return {
           id: m.id,
           sourcePosition: Position.Right,
           targetPosition: Position.Left,
           data: { ...m },
-          position: savedPos[m.id] || { x: c * 400, y: index * 180 },
+          position: posPrevias[m.id] || savedPos[m.id] || { x: m.cuat * 400, y: index * 180 },
           className: 'materia-card',
-        });
+        };
       });
-    }
-    setNodes(initialNodes);
-    setTimeout(() => fitView({ padding: 0.15 }), 400);
-  }, [fitView]);
+    });
+  }, [materiasActivas]);
 
   const onNodeDragStop = useCallback((event, node) => {
     const currentPos = JSON.parse(localStorage.getItem('pos-v21') || '{}');
@@ -185,26 +253,37 @@ function MapaCivil() {
   }, []);
 
   const stats = useMemo(() => {
-    const creds = listaMaterias.reduce((acc, m) => aprobadas[m.id] ? acc + m.cred : acc, 0);
-    return { creds, porc: ((creds / TOTAL_CREDITOS_CARRERA) * 100).toFixed(1) };
-  }, [aprobadas]);
+    const credsPlan = listaMaterias.reduce((acc, m) => aprobadas[m.id] ? acc + m.cred : acc, 0);
+    const entradas = Object.entries(electivas);
+    const elegidos = entradas.reduce((acc, [, cfg]) => acc + cfg.cred, 0);
+    const aprobadosElec = entradas.reduce((acc, [id, cfg]) => aprobadas[id] ? acc + cfg.cred : acc, 0);
+    // El plan pide 30 creditos de electivas: lo que sobre no suma al total de la carrera
+    const creds = credsPlan + Math.min(aprobadosElec, CREDITOS_ELECTIVAS_REQ);
+    return {
+      creds,
+      elegidos,
+      aprobadosElec,
+      cantidad: entradas.length,
+      porc: ((creds / TOTAL_CREDITOS_CARRERA) * 100).toFixed(1),
+    };
+  }, [aprobadas, electivas]);
 
   const materiasDisponibles = useMemo(() => {
-    return listaMaterias.filter(m => {
-      if (aprobadas[m.id]) return false;
+    return materiasActivas.filter(m => {
+      if (m.esHub || aprobadas[m.id]) return false;
       const correlativas = correlativasBase.filter(e => e.target === m.id);
       const correlativasOK = correlativas.every(e => aprobadas[e.source]);
       const creditosOK = m.reqCred ? stats.creds >= m.reqCred : true;
       return correlativasOK && creditosOK;
     });
-  }, [aprobadas, stats.creds]);
+  }, [aprobadas, stats.creds, materiasActivas]);
 
   const ancestors = useMemo(() => {
     if (!hoverNode) return new Set();
     return findRecursiveAncestors(hoverNode, correlativasBase);
   }, [hoverNode]);
 
-  const selectedM = useMemo(() => listaMaterias.find(m => m.id === selectedNode), [selectedNode]);
+  const selectedM = useMemo(() => materiasActivas.find(m => m.id === selectedNode), [selectedNode, materiasActivas]);
 
   const edges = useMemo(() => {
     return correlativasBase.map(e => {
@@ -231,6 +310,8 @@ function MapaCivil() {
           transition: all 0.3s ease;
         }
         .materia-card.aprobada { opacity: 0.5; background: #064e3b; border-color: #10b981 !important; }
+        .materia-card.hub { border-style: dashed !important; background: #14100a; cursor: pointer; }
+        .materia-card.hub:hover { background: #1f1809; }
         .materia-card.fade { opacity: 0.08; filter: blur(1px); }
         .materia-card.highlight { border-width: 5px; box-shadow: 0 0 30px; }
         
@@ -262,6 +343,53 @@ function MapaCivil() {
         .disp-item { background: #1a1a1a; padding: 12px; border-radius: 8px; margin-bottom: 8px; border-left: 4px solid #d38901; font-size: 14px; }
         
         .ev-row { display: flex; justify-content: space-between; border-bottom: 1px solid #222; padding: 10px 0; font-size: 15px; }
+
+        /* --- PANEL DE ELECTIVAS --- */
+        .elec-panel {
+          position: absolute; top: 0; right: 0; height: 100%; z-index: 1100;
+          background: #0a0a0a; border-left: 1px solid #333; width: 440px; max-width: 92vw;
+          transform: translateX(${showElectivas ? '0' : '100%'});
+          transition: transform 0.35s cubic-bezier(.4,0,.2,1);
+          padding: 26px 24px 60px; color: #fff; overflow-y: auto;
+          box-shadow: -20px 0 60px rgba(0,0,0,0.8);
+        }
+        .elec-head { display: flex; justify-content: space-between; align-items: flex-start; }
+        .elec-x { background: none; border: none; color: #666; font-size: 22px; cursor: pointer; line-height: 1; }
+        .elec-x:hover { color: #fff; }
+        .elec-bar { background: #222; height: 8px; border-radius: 4px; overflow: hidden; margin: 18px 0 6px; }
+        .elec-nota { font-size: 11px; color: #555; line-height: 1.5; margin: 10px 0 18px; }
+        .elec-search {
+          width: 100%; background: #151515; border: 1px solid #2a2a2a; border-radius: 8px;
+          padding: 11px 14px; color: #fff; font-size: 14px; outline: none; margin-bottom: 6px;
+        }
+        .elec-search:focus { border-color: #d38901; }
+        .elec-cat { font-size: 11px; color: #d38901; text-transform: uppercase; letter-spacing: 1.5px; margin: 26px 0 10px; }
+        .elec-item { background: #131313; border: 1px solid #222; border-radius: 10px; margin-bottom: 7px; overflow: hidden; transition: border-color .2s; }
+        .elec-item.on { border-color: #d38901; background: #1a1508; }
+        .elec-row { display: flex; align-items: center; gap: 12px; padding: 13px 14px; cursor: pointer; }
+        .elec-row:hover { background: rgba(255,255,255,0.04); }
+        .elec-check {
+          flex: none; width: 24px; height: 24px; border-radius: 6px; border: 1px solid #3a3a3a;
+          display: grid; place-items: center; font-size: 14px; font-weight: 900; color: #666;
+        }
+        .elec-item.on .elec-check { background: #d38901; border-color: #d38901; color: #000; }
+        .elec-nom { font-size: 14px; font-weight: 600; line-height: 1.25; }
+        .elec-cfg { display: flex; align-items: flex-end; gap: 10px; padding: 12px 14px 13px; border-top: 1px solid #241d0c; }
+        .elec-cfg label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: .5px; display: flex; flex-direction: column; gap: 5px; }
+        .elec-cfg input, .elec-cfg select {
+          background: #0a0a0a; border: 1px solid #333; border-radius: 6px; color: #fff;
+          padding: 7px 9px; font-size: 13px; width: 78px; outline: none;
+        }
+        .elec-cfg input:focus, .elec-cfg select:focus { border-color: #d38901; }
+        .elec-del { margin-left: auto; background: none; border: 1px solid #442; color: #a67; border-radius: 6px; padding: 8px 12px; font-size: 11px; cursor: pointer; font-weight: 700; }
+        .elec-del:hover { background: #2a1010; color: #ff6b6b; border-color: #833; }
+        .elec-vacio { color: #444; font-size: 13px; text-align: center; padding: 30px 0; }
+
+        .btn-elec-open {
+          background: #d38901; color: #000; border: none; padding: 10px 20px; border-radius: 8px;
+          cursor: pointer; position: absolute; top: 20px; left: ${isOpen ? '20px' : '175px'}; z-index: 60; font-weight: 800;
+          transition: left .35s ease-out;
+        }
       `}</style>
 
       {/* FILTROS POR RAMA */}
@@ -301,7 +429,9 @@ function MapaCivil() {
           <div>
             <div style={{background: RAMAS[selectedM.rama].color, padding: '4px 10px', borderRadius: '4px', fontSize: '10px', fontWeight: 900, display: 'inline-block'}}>{RAMAS[selectedM.rama].nombre}</div>
             <h2 style={{fontSize: '24px', margin: '15px 0', lineHeight: 1.1}}>{selectedM.nombre}</h2>
-            <div style={{color: '#555', marginBottom: '30px'}}>{selectedM.id} • {selectedM.cred} Créditos</div>
+            <div style={{color: '#555', marginBottom: '30px'}}>
+              {selectedM.esElectiva ? selectedM.categoria : selectedM.id} • {selectedM.cred} Créditos
+            </div>
             
             <h4 style={{color: '#888', fontSize: '12px', letterSpacing: '1px', marginBottom: '10px'}}>REQUISITOS DE APROBACIÓN</h4>
             {selectedM.ev ? (
@@ -313,7 +443,13 @@ function MapaCivil() {
                   <span>✨ Promocionable</span> <span>{selectedM.ev.pro ? 'SÍ' : 'NO'}</span>
                 </div>
               </div>
-            ) : <p style={{color: '#444'}}>Información no disponible</p>}
+            ) : (
+              <p style={{color: '#444', fontSize: '13px', lineHeight: 1.6}}>
+                {selectedM.esElectiva
+                  ? 'El plan publicado no detalla la evaluación de las electivas. Consultalo en el SGA.'
+                  : 'Información no disponible'}
+              </p>
+            )}
 
             <button 
               onClick={() => {
@@ -327,11 +463,102 @@ function MapaCivil() {
             >
               {aprobadas[selectedM.id] ? 'MATERIA APROBADA ✓' : 'MARCAR COMO APROBADA'}
             </button>
+
+            {selectedM.esElectiva && (
+              <button
+                onClick={() => { toggleElectiva(selectedM); setSelectedNode(null); }}
+                style={{width: '100%', marginTop: '10px', padding: '13px', borderRadius: '8px', background: 'none', color: '#a67', border: '1px solid #442', fontWeight: 700, cursor: 'pointer'}}
+              >
+                QUITAR DEL MAPA
+              </button>
+            )}
           </div>
         ) : <p style={{marginTop: '100px', textAlign: 'center', color: '#333'}}>Selecciona una materia para ver detalles</p>}
       </div>
 
+      {/* PANEL DE ELECTIVAS */}
+      <div className="elec-panel">
+        <div className="elec-head">
+          <div>
+            <h2 style={{ fontSize: '22px', margin: 0, fontWeight: 900 }}>ELECTIVAS</h2>
+            <div style={{ fontSize: '12px', color: '#888', marginTop: '6px' }}>
+              {stats.cantidad} elegida{stats.cantidad === 1 ? '' : 's'} • {stats.elegidos} de {CREDITOS_ELECTIVAS_REQ} créditos
+            </div>
+          </div>
+          <button className="elec-x" onClick={() => setShowElectivas(false)}>✕</button>
+        </div>
+
+        <div className="elec-bar">
+          <div style={{
+            height: '100%',
+            width: `${Math.min(100, (stats.elegidos / CREDITOS_ELECTIVAS_REQ) * 100)}%`,
+            background: stats.elegidos >= CREDITOS_ELECTIVAS_REQ ? '#10b981' : '#d38901',
+            transition: 'width .3s ease',
+          }} />
+        </div>
+        <p className="elec-nota">
+          Tocá una electiva para sumarla al mapa. Los créditos son estimados (el PDF del plan no los publica): editalos si tenés el dato real.
+        </p>
+
+        <input
+          className="elec-search"
+          placeholder="Buscar electiva..."
+          value={busqueda}
+          onChange={e => setBusqueda(e.target.value)}
+        />
+
+        {categoriasElectivas.map(categoria => {
+          const items = electivasCatalogo.filter(el =>
+            el.categoria === categoria && normalizar(el.nombre).includes(normalizar(busqueda))
+          );
+          if (!items.length) return null;
+          return (
+            <div key={categoria}>
+              <h4 className="elec-cat">{categoria}</h4>
+              {items.map(el => {
+                const sel = electivas[el.id];
+                return (
+                  <div key={el.id} className={`elec-item ${sel ? 'on' : ''}`}>
+                    <div className="elec-row" onClick={() => toggleElectiva(el)}>
+                      <span className="elec-check">{sel ? '✓' : '+'}</span>
+                      <span className="elec-nom">{el.nombre}</span>
+                    </div>
+                    {sel && (
+                      <div className="elec-cfg">
+                        <label>
+                          Créditos
+                          <input
+                            type="number" min="0" max="12" value={sel.cred}
+                            onChange={e => editarElectiva(el.id, 'cred', Math.max(0, Number(e.target.value) || 0))}
+                          />
+                        </label>
+                        <label>
+                          Cuatrimestre
+                          <select value={sel.cuat} onChange={e => editarElectiva(el.id, 'cuat', Number(e.target.value))}>
+                            {[5, 6, 7, 8, 9, 10].map(c => <option key={c} value={c}>C{c}</option>)}
+                          </select>
+                        </label>
+                        <button className="elec-del" onClick={() => toggleElectiva(el)}>Quitar</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+
+        {!electivasCatalogo.some(el => normalizar(el.nombre).includes(normalizar(busqueda))) && (
+          <div className="elec-vacio">Ninguna electiva coincide con la búsqueda</div>
+        )}
+      </div>
+
       {!isOpen && <button className="btn-panel-open" onClick={() => setIsOpen(true)}>☰ PROGRESO</button>}
+      {!showElectivas && (
+        <button className="btn-elec-open" onClick={() => { setShowElectivas(true); setSelectedNode(null); }}>
+          ★ ELECTIVAS {stats.cantidad > 0 && `(${stats.cantidad})`}
+        </button>
+      )}
 
       <ReactFlow
         nodes={nodes.map(n => {
@@ -355,13 +582,29 @@ function MapaCivil() {
 
           return {
             ...n,
-            className: `materia-card ${aprobadas[n.id] ? 'aprobada' : ''} ${hClass} ${isFaded ? 'fade' : ''} ${ramaFiltro === n.data.rama ? 'highlight' : ''}`,
-            style: { ...n.style, borderColor, boxShadow, borderLeft: `8px solid ${RAMAS[n.data.rama].color}` },
-            data: { label: (
+            className: `materia-card ${n.data.esHub ? 'hub' : ''} ${aprobadas[n.id] ? 'aprobada' : ''} ${hClass} ${isFaded ? 'fade' : ''} ${ramaFiltro === n.data.rama ? 'highlight' : ''}`,
+            style: {
+              ...n.style, boxShadow,
+              borderTopColor: borderColor,
+              borderRightColor: borderColor,
+              borderBottomColor: borderColor,
+              borderLeftColor: RAMAS[n.data.rama].color,
+              borderLeftWidth: '8px',
+              borderLeftStyle: 'solid',
+            },
+            data: { ...n.data, label: n.data.esHub ? (
+              <>
+                <span className="cr-tag">{stats.elegidos} / {CREDITOS_ELECTIVAS_REQ}</span>
+                <div className="materia-nombre">★ Electivas</div>
+                <div style={{fontSize: '11px', opacity: 0.6}}>
+                  {stats.cantidad === 0 ? 'Click para elegir' : `${stats.cantidad} elegida${stats.cantidad === 1 ? '' : 's'} • click para editar`}
+                </div>
+              </>
+            ) : (
               <>
                 <span className="cr-tag">{n.data.cred} Créditos</span>
                 <div className="materia-nombre">{n.data.nombre}</div>
-                <div style={{fontSize: '11px', opacity: 0.5}}>C{n.data.cuat} • {n.id}</div>
+                <div style={{fontSize: '11px', opacity: 0.5}}>C{n.data.cuat} • {n.data.esElectiva ? 'Electiva' : n.id}</div>
               </>
             )}
           };
@@ -369,7 +612,10 @@ function MapaCivil() {
         edges={edges}
         onNodesChange={(c) => setNodes(nds => applyNodeChanges(c, nds))}
         onNodeDragStop={onNodeDragStop}
-        onNodeClick={(e, n) => setSelectedNode(n.id)}
+        onNodeClick={(e, n) => {
+          if (n.data?.esHub) { setShowElectivas(true); setSelectedNode(null); return; }
+          setSelectedNode(n.id);
+        }}
         onNodeDoubleClick={onNodeDoubleClick}        
         onNodeMouseEnter={(_, n) => setHoverNode(n.id)}
         onNodeMouseLeave={() => setHoverNode(null)}
