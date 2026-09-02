@@ -9,7 +9,7 @@ import ReactFlow, {
   useReactFlow
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { electivasCatalogo, categoriasElectivas, CREDITOS_ELECTIVAS_REQ } from './data/electivas.js';
+import { electivasCatalogo, categoriasElectivas, electivaPorId, CREDITOS_ELECTIVAS_REQ } from './data/electivas.js';
 
 const cuatrimestreColores = ['#ff4d4d', '#ff944d', '#33cc33', '#00c9c9ff', '#9966ff', '#ff3399', '#00cccc', '#ff0055', '#00ffa2', '#ffffff'];
 const TOTAL_CREDITOS_CARRERA = 221;
@@ -127,6 +127,13 @@ const findRecursiveAncestors = (nodeId, edges, results = new Set()) => {
   return results;
 };
 
+const requisitosTexto = (el) => {
+  const partes = [];
+  if (el.corr?.length) partes.push('correlativas ' + el.corr.join(' + '));
+  if (el.reqCred) partes.push(el.reqCred + ' créditos');
+  return partes.length ? ' · requiere ' + partes.join(' y ') : '';
+};
+
 const normalizar = (t) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
 const getDynamicColor = (sNode, tNode) => {
@@ -183,33 +190,31 @@ function MapaCivil() {
           return resto;
         });
       } else {
-        next[el.id] = { cuat: 10, cred: el.cred };
+        next[el.id] = { cuat: 10 };
       }
       return guardarElectivas(next);
     });
   }, [guardarElectivas]);
 
-  const editarElectiva = useCallback((id, campo, valor) => {
-    if (campo === 'cuat') {
-      // Se mueve de columna: olvidamos la posicion vieja y sacamos el nodo
-      // para que el efecto de sincronizacion lo vuelva a colocar donde va.
-      const pos = JSON.parse(localStorage.getItem('pos-v21') || '{}');
-      delete pos[id];
-      localStorage.setItem('pos-v21', JSON.stringify(pos));
-      setNodes(nds => nds.filter(nd => nd.id !== id));
-    }
+  const cambiarCuatrimestre = useCallback((id, cuat) => {
+    // Se mueve de columna: olvidamos la posicion vieja y sacamos el nodo
+    // para que el efecto de sincronizacion lo vuelva a colocar donde va.
+    const pos = JSON.parse(localStorage.getItem('pos-v21') || '{}');
+    delete pos[id];
+    localStorage.setItem('pos-v21', JSON.stringify(pos));
+    setNodes(nds => nds.filter(nd => nd.id !== id));
     setElectivas(prev => {
       if (!prev[id]) return prev;
-      return guardarElectivas({ ...prev, [id]: { ...prev[id], [campo]: valor } });
+      return guardarElectivas({ ...prev, [id]: { ...prev[id], cuat } });
     });
   }, [guardarElectivas]);
 
   // Materias del plan + las electivas que el usuario eligio poner en el mapa
   const materiasActivas = useMemo(() => {
     const elegidas = Object.entries(electivas).map(([id, cfg]) => {
-      const base = electivasCatalogo.find(e => e.id === id);
+      const base = electivaPorId[id];
       if (!base) return null; // el catalogo cambio y esta electiva ya no existe
-      return { ...base, cuat: cfg.cuat, cred: cfg.cred, rama: 'ELECTIVA', esElectiva: true };
+      return { ...base, cuat: cfg.cuat, rama: 'ELECTIVA', esElectiva: true };
     }).filter(Boolean);
 
     return [...listaMaterias, ...elegidas].sort((a, b) =>
@@ -218,6 +223,24 @@ function MapaCivil() {
         : (a.esencial === b.esencial ? b.cred - a.cred : a.esencial ? -1 : 1)
     );
   }, [electivas]);
+
+  // Correlativas del plan + las que aportan las electivas elegidas.
+  // "todas" manda para calcular disponibilidad; "visibles" son las que se
+  // pueden dibujar porque los dos extremos estan en el mapa.
+  const correlativas = useMemo(() => {
+    const deElectivas = Object.keys(electivas).flatMap(id => {
+      const base = electivaPorId[id];
+      return (base?.corr || []).map(source => ({ id: `e-${source}-${id}`, source, target: id }));
+    });
+    return [...correlativasBase, ...deElectivas];
+  }, [electivas]);
+
+  const idsEnMapa = useMemo(() => new Set(materiasActivas.map(m => m.id)), [materiasActivas]);
+
+  const correlativasVisibles = useMemo(
+    () => correlativas.filter(e => idsEnMapa.has(e.source) && idsEnMapa.has(e.target)),
+    [correlativas, idsEnMapa]
+  );
 
   // Carga inicial del storage
   useEffect(() => {
@@ -255,8 +278,9 @@ function MapaCivil() {
   const stats = useMemo(() => {
     const credsPlan = listaMaterias.reduce((acc, m) => aprobadas[m.id] ? acc + m.cred : acc, 0);
     const entradas = Object.entries(electivas);
-    const elegidos = entradas.reduce((acc, [, cfg]) => acc + cfg.cred, 0);
-    const aprobadosElec = entradas.reduce((acc, [id, cfg]) => aprobadas[id] ? acc + cfg.cred : acc, 0);
+    const credDe = (id) => electivaPorId[id]?.cred || 0;
+    const elegidos = entradas.reduce((acc, [id]) => acc + credDe(id), 0);
+    const aprobadosElec = entradas.reduce((acc, [id]) => aprobadas[id] ? acc + credDe(id) : acc, 0);
     // El plan pide 30 creditos de electivas: lo que sobre no suma al total de la carrera
     const creds = credsPlan + Math.min(aprobadosElec, CREDITOS_ELECTIVAS_REQ);
     return {
@@ -271,22 +295,22 @@ function MapaCivil() {
   const materiasDisponibles = useMemo(() => {
     return materiasActivas.filter(m => {
       if (m.esHub || aprobadas[m.id]) return false;
-      const correlativas = correlativasBase.filter(e => e.target === m.id);
-      const correlativasOK = correlativas.every(e => aprobadas[e.source]);
+      const requeridas = correlativas.filter(e => e.target === m.id);
+      const correlativasOK = requeridas.every(e => aprobadas[e.source]);
       const creditosOK = m.reqCred ? stats.creds >= m.reqCred : true;
       return correlativasOK && creditosOK;
     });
-  }, [aprobadas, stats.creds, materiasActivas]);
+  }, [aprobadas, stats.creds, materiasActivas, correlativas]);
 
   const ancestors = useMemo(() => {
     if (!hoverNode) return new Set();
-    return findRecursiveAncestors(hoverNode, correlativasBase);
-  }, [hoverNode]);
+    return findRecursiveAncestors(hoverNode, correlativasVisibles);
+  }, [hoverNode, correlativasVisibles]);
 
   const selectedM = useMemo(() => materiasActivas.find(m => m.id === selectedNode), [selectedNode, materiasActivas]);
 
   const edges = useMemo(() => {
-    return correlativasBase.map(e => {
+    return correlativasVisibles.map(e => {
       const isUnlock = hoverNode === e.source;
       if (!isUnlock) return { ...e, style: { opacity: 0 } };
       const sNode = nodes.find(n => n.id === e.source);
@@ -298,7 +322,7 @@ function MapaCivil() {
         markerEnd: { type: MarkerType.ArrowClosed, color, width: 25, height: 25 }
       };
     }).filter(e => e.style.opacity > 0);
-  }, [hoverNode, nodes]);
+  }, [hoverNode, nodes, correlativasVisibles]);
 
   return (
     <div className="main-container">
@@ -373,7 +397,9 @@ function MapaCivil() {
           display: grid; place-items: center; font-size: 14px; font-weight: 900; color: #666;
         }
         .elec-item.on .elec-check { background: #d38901; border-color: #d38901; color: #000; }
-        .elec-nom { font-size: 14px; font-weight: 600; line-height: 1.25; }
+        .elec-nom { font-size: 14px; font-weight: 600; line-height: 1.25; display: block; }
+        .elec-meta { font-size: 10.5px; color: #6b6b6b; margin-top: 4px; display: block; letter-spacing: .2px; }
+        .elec-item.on .elec-meta { color: #9a8352; }
         .elec-cfg { display: flex; align-items: flex-end; gap: 10px; padding: 12px 14px 13px; border-top: 1px solid #241d0c; }
         .elec-cfg label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: .5px; display: flex; flex-direction: column; gap: 5px; }
         .elec-cfg input, .elec-cfg select {
@@ -430,7 +456,8 @@ function MapaCivil() {
             <div style={{background: RAMAS[selectedM.rama].color, padding: '4px 10px', borderRadius: '4px', fontSize: '10px', fontWeight: 900, display: 'inline-block'}}>{RAMAS[selectedM.rama].nombre}</div>
             <h2 style={{fontSize: '24px', margin: '15px 0', lineHeight: 1.1}}>{selectedM.nombre}</h2>
             <div style={{color: '#555', marginBottom: '30px'}}>
-              {selectedM.esElectiva ? selectedM.categoria : selectedM.id} • {selectedM.cred} Créditos
+              {selectedM.id} • {selectedM.cred} Créditos
+              {selectedM.esElectiva && <> • {selectedM.categoria}</>}
             </div>
             
             <h4 style={{color: '#888', fontSize: '12px', letterSpacing: '1px', marginBottom: '10px'}}>REQUISITOS DE APROBACIÓN</h4>
@@ -497,7 +524,7 @@ function MapaCivil() {
           }} />
         </div>
         <p className="elec-nota">
-          Tocá una electiva para sumarla al mapa. Los créditos son estimados (el PDF del plan no los publica): editalos si tenés el dato real.
+          Tocá una electiva para sumarla al mapa. Se agrega con sus créditos y correlativas reales; sólo elegís en qué cuatrimestre la ponés.
         </p>
 
         <input
@@ -521,24 +548,22 @@ function MapaCivil() {
                   <div key={el.id} className={`elec-item ${sel ? 'on' : ''}`}>
                     <div className="elec-row" onClick={() => toggleElectiva(el)}>
                       <span className="elec-check">{sel ? '✓' : '+'}</span>
-                      <span className="elec-nom">{el.nombre}</span>
+                      <span>
+                        <span className="elec-nom">{el.nombre}</span>
+                        <span className="elec-meta">
+                          {el.id} · {el.cred} crédito{el.cred === 1 ? '' : 's'}{requisitosTexto(el)}
+                        </span>
+                      </span>
                     </div>
                     {sel && (
                       <div className="elec-cfg">
                         <label>
-                          Créditos
-                          <input
-                            type="number" min="0" max="12" value={sel.cred}
-                            onChange={e => editarElectiva(el.id, 'cred', Math.max(0, Number(e.target.value) || 0))}
-                          />
-                        </label>
-                        <label>
                           Cuatrimestre
-                          <select value={sel.cuat} onChange={e => editarElectiva(el.id, 'cuat', Number(e.target.value))}>
+                          <select value={sel.cuat} onChange={e => cambiarCuatrimestre(el.id, Number(e.target.value))}>
                             {[5, 6, 7, 8, 9, 10].map(c => <option key={c} value={c}>C{c}</option>)}
                           </select>
                         </label>
-                        <button className="elec-del" onClick={() => toggleElectiva(el)}>Quitar</button>
+                        <button className="elec-del" onClick={() => toggleElectiva(el)}>Quitar del mapa</button>
                       </div>
                     )}
                   </div>
@@ -562,7 +587,7 @@ function MapaCivil() {
 
       <ReactFlow
         nodes={nodes.map(n => {
-          const isTarget = hoverNode && correlativasBase.some(e => e.source === hoverNode && e.target === n.id);
+          const isTarget = hoverNode && correlativasVisibles.some(e => e.source === hoverNode && e.target === n.id);
           const isSource = ancestors.has(n.id);
           const isFaded = (ramaFiltro && ramaFiltro !== n.data.rama);
           
