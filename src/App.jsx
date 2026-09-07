@@ -14,13 +14,19 @@ import { electivasCatalogo, categoriasElectivas, electivaPorId, CREDITOS_ELECTIV
 const PASO_X = 400;        // separacion entre cuatrimestres
 const ANCHO_CARD = 280;    // ancho de una card de materia
 const CUATS = 10;
+// Borde derecho de la banda del 5° año. Una materia cuyo centro caiga mas a la
+// derecha esta fuera del plan: son los cuatrimestres extra (atrasados).
+const LIMITE_PLAN = CUATS * PASO_X + ANCHO_CARD + 45;
 
 // Nodos de fondo: no se arrastran, no se seleccionan y no reciben clicks.
 function ZonaAno({ data }) {
   return (
-    <div className="zona-ano" style={{ width: data.w, height: data.h }}>
+    <div className={`zona-ano ${data.extra ? 'extra' : ''}`} style={{ width: data.w, height: data.h }}>
       <div className="zona-ano-tag">{data.etiqueta}</div>
-      {!data.ultimo && <div className="zona-ano-linea" />}
+      {data.limite && (
+        <div className="zona-ano-limite"><span>FIN DEL PLAN · 5 AÑOS</span></div>
+      )}
+      {data.linea && <div className="zona-ano-linea" />}
     </div>
   );
 }
@@ -325,6 +331,17 @@ function MapaCivil() {
     });
   }, [nodes, rangoIntercambio?.x0, rangoIntercambio?.x1]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Cuatrimestres extra: los que aparecen a la derecha del fin del plan.
+  // Solo existen si hay materias ahi, y se derivan de la posicion real.
+  const cuatsExtra = useMemo(() => {
+    const encontrados = new Set();
+    nodes.forEach(nd => {
+      if (nd.position.x + ANCHO_CARD / 2 <= LIMITE_PLAN) return;
+      encontrados.add(Math.max(CUATS + 1, Math.round(nd.position.x / PASO_X)));
+    });
+    return [...encontrados].sort((a, b) => a - b);
+  }, [nodes]);
+
   const nodosFondo = useMemo(() => {
     const fondo = [];
 
@@ -344,10 +361,30 @@ function MapaCivil() {
           w: PASO_X + ANCHO_CARD + 90,
           h: altoMapa + 115,
           etiqueta: `${ano}° AÑO`,
-          ultimo: ano === CUATS / 2,
+          linea: ano < CUATS / 2,
+          limite: ano === CUATS / 2,
         },
       });
     }
+
+    // Una banda por cada cuatrimestre extra que tenga materias
+    cuatsExtra.forEach((cuat, i) => {
+      fondo.push({
+        id: `__extra-${cuat}`,
+        type: 'zonaAno',
+        draggable: false, selectable: false, zIndex: 1,
+        width: ANCHO_CARD + 90, height: altoMapa + 115,
+        style: { pointerEvents: 'none' },
+        position: { x: cuat * PASO_X - 45, y: -115 },
+        data: {
+          w: ANCHO_CARD + 90,
+          h: altoMapa + 115,
+          etiqueta: `EXTRA · C${cuat}`,
+          extra: true,
+          linea: i < cuatsExtra.length - 1,
+        },
+      });
+    });
 
     if (rangoIntercambio) {
       fondo.push({
@@ -367,7 +404,7 @@ function MapaCivil() {
     }
 
     return fondo;
-  }, [altoMapa, intercambio, rangoIntercambio?.x0, materiasEnIntercambio.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [altoMapa, intercambio, rangoIntercambio?.x0, materiasEnIntercambio.length, cuatsExtra]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cambiarIntercambio = useCallback((cuat) => {
     setIntercambio(cuat);
@@ -477,6 +514,18 @@ function MapaCivil() {
         .zona-ano-linea {
           position: absolute; top: 0; right: 0; height: 100%;
           border-right: 2px dashed #232323;
+        }
+        .zona-ano-limite {
+          position: absolute; top: 0; right: 0; height: 100%;
+          border-right: 3px solid rgba(239, 68, 68, 0.5);
+        }
+        .zona-ano-limite span {
+          position: absolute; top: 130px; right: 16px;
+          writing-mode: vertical-rl; white-space: nowrap;
+          color: rgba(239, 68, 68, 0.7); font-size: 13px; font-weight: 900; letter-spacing: 5px;
+        }
+        .zona-ano.extra .zona-ano-tag {
+          color: rgba(239, 68, 68, 0.32); font-size: 26px; letter-spacing: 5px;
         }
         .zona-intercambio {
           position: relative; pointer-events: none;
