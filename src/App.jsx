@@ -190,6 +190,7 @@ function MapaCivil() {
   const [electivas, setElectivas] = useState({});            // Nuevo: { id: { cuat, cred } }
   const [busqueda, setBusqueda] = useState('');
   const [intercambio, setIntercambio] = useState(null); // cuatrimestre marcado como intercambio
+  const [evOverrides, setEvOverrides] = useState({});    // requisitos editados a mano, por materia
   const { fitView } = useReactFlow();
 
   const onNodeDoubleClick = useCallback((event, node) => {
@@ -282,6 +283,7 @@ function MapaCivil() {
     setAprobadas(JSON.parse(localStorage.getItem('prog-v21') || '{}'));
     setElectivas(JSON.parse(localStorage.getItem('elec-v1') || '{}'));
     setIntercambio(JSON.parse(localStorage.getItem('intercambio-v1') || 'null'));
+    setEvOverrides(JSON.parse(localStorage.getItem('ev-v1') || '{}'));
     setTimeout(() => fitView({ padding: 0.15 }), 400);
   }, [fitView]);
 
@@ -445,6 +447,28 @@ function MapaCivil() {
 
   const selectedM = useMemo(() => materiasActivas.find(m => m.id === selectedNode), [selectedNode, materiasActivas]);
 
+  // Los requisitos del plan, pisados por lo que haya editado el usuario
+  const evActual = useMemo(() => {
+    if (!selectedM) return null;
+    return { p: 0, tp: 0, f: false, pro: false, ...(selectedM.ev || {}), ...(evOverrides[selectedM.id] || {}) };
+  }, [selectedM, evOverrides]);
+
+  const editarEv = useCallback((id, campo, valor) => {
+    setEvOverrides(prev => {
+      const next = { ...prev, [id]: { ...(prev[id] || {}), [campo]: valor } };
+      localStorage.setItem('ev-v1', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const restaurarEv = useCallback((id) => {
+    setEvOverrides(prev => {
+      const { [id]: _descartado, ...resto } = prev;
+      localStorage.setItem('ev-v1', JSON.stringify(resto));
+      return resto;
+    });
+  }, []);
+
   const edges = useMemo(() => {
     return correlativasVisibles.map(e => {
       const isUnlock = hoverNode === e.source;
@@ -546,7 +570,31 @@ function MapaCivil() {
         }
         .sp-select:focus { border-color: #38bdf8; }
 
-        .ev-row { display: flex; justify-content: space-between; border-bottom: 1px solid #222; padding: 10px 0; font-size: 15px; }
+        .ev-row { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #222; padding: 9px 0; font-size: 15px; }
+        .ev-caja { background: #151515; padding: 15px; border-radius: 10px; }
+        .ev-titulo {
+          color: #888; font-size: 12px; letter-spacing: 1px; margin: 0 0 10px;
+          display: flex; justify-content: space-between; align-items: center;
+        }
+        .ev-reset {
+          background: none; border: none; color: #555; font-size: 11px; cursor: pointer;
+          letter-spacing: 0; text-decoration: underline; padding: 0;
+        }
+        .ev-reset:hover { color: #d38901; }
+        .ev-nota { color: #555; font-size: 12px; line-height: 1.5; margin: 0 0 12px; }
+        .ev-row input[type=number] {
+          width: 66px; background: #0a0a0a; border: 1px solid #333; border-radius: 6px;
+          color: #fff; padding: 6px 8px; font-size: 14px; text-align: center; outline: none;
+        }
+        .ev-row input[type=number]:focus { border-color: #d38901; }
+        .ev-toggle { display: flex; gap: 4px; }
+        .ev-toggle button {
+          background: #0a0a0a; border: 1px solid #2e2e2e; color: #5a5a5a; border-radius: 6px;
+          padding: 5px 13px; font-size: 12px; font-weight: 800; cursor: pointer;
+        }
+        .ev-toggle button:hover { color: #aaa; }
+        .ev-toggle button.on { background: #2e2e2e; color: #fff; border-color: #4a4a4a; }
+        .ev-toggle.verde button.on { background: #064e3b; border-color: #10b981; color: #10b981; }
 
         /* La atribucion de React Flow queda a la vista ahora que el canvas
            encuadra exacto: la integramos al tema oscuro en vez de ocultarla. */
@@ -670,23 +718,51 @@ function MapaCivil() {
               {selectedM.esElectiva && <> • {selectedM.categoria}</>}
             </div>
             
-            <h4 style={{color: '#888', fontSize: '12px', letterSpacing: '1px', marginBottom: '10px'}}>REQUISITOS DE APROBACIÓN</h4>
-            {selectedM.ev ? (
-              <div style={{background: '#151515', padding: '15px', borderRadius: '10px'}}>
-                <div className="ev-row"><span>📝 Parciales</span> <span>{selectedM.ev.p}</span></div>
-                <div className="ev-row"><span>📂 Trabajos Prácticos</span> <span>{selectedM.ev.tp}</span></div>
-                <div className="ev-row"><span>🎓 Examen Final</span> <span>{selectedM.ev.f ? 'Sí' : 'No'}</span></div>
-                <div className="ev-row" style={{color: selectedM.ev.pro ? '#10b981' : '#ff4d4d', border: 'none'}}>
-                  <span>✨ Promocionable</span> <span>{selectedM.ev.pro ? 'SÍ' : 'NO'}</span>
-                </div>
-              </div>
-            ) : (
-              <p style={{color: '#444', fontSize: '13px', lineHeight: 1.6}}>
+            <h4 className="ev-titulo">
+              REQUISITOS DE APROBACIÓN
+              {evOverrides[selectedM.id] && (
+                <button className="ev-reset" onClick={() => restaurarEv(selectedM.id)}>restaurar</button>
+              )}
+            </h4>
+
+            {!selectedM.ev && !evOverrides[selectedM.id] && (
+              <p className="ev-nota">
                 {selectedM.esElectiva
-                  ? 'El plan publicado no detalla la evaluación de las electivas. Consultalo en el SGA.'
-                  : 'Información no disponible'}
+                  ? 'El plan publicado no detalla la evaluación de las electivas. Cargala vos acá.'
+                  : 'Sin datos del plan. Cargalos vos acá.'}
               </p>
             )}
+
+            <div className="ev-caja">
+              <div className="ev-row">
+                <span>📝 Parciales</span>
+                <input
+                  type="number" min="0" max="20" value={evActual.p}
+                  onChange={e => editarEv(selectedM.id, 'p', Math.max(0, Number(e.target.value) || 0))}
+                />
+              </div>
+              <div className="ev-row">
+                <span>📂 Trabajos Prácticos</span>
+                <input
+                  type="number" min="0" max="50" value={evActual.tp}
+                  onChange={e => editarEv(selectedM.id, 'tp', Math.max(0, Number(e.target.value) || 0))}
+                />
+              </div>
+              <div className="ev-row">
+                <span>🎓 Examen Final</span>
+                <div className="ev-toggle">
+                  <button className={evActual.f ? 'on' : ''} onClick={() => editarEv(selectedM.id, 'f', true)}>Sí</button>
+                  <button className={!evActual.f ? 'on' : ''} onClick={() => editarEv(selectedM.id, 'f', false)}>No</button>
+                </div>
+              </div>
+              <div className="ev-row" style={{ border: 'none' }}>
+                <span>✨ Promocionable</span>
+                <div className="ev-toggle verde">
+                  <button className={evActual.pro ? 'on' : ''} onClick={() => editarEv(selectedM.id, 'pro', true)}>Sí</button>
+                  <button className={!evActual.pro ? 'on' : ''} onClick={() => editarEv(selectedM.id, 'pro', false)}>No</button>
+                </div>
+              </div>
+            </div>
 
             <button 
               onClick={() => {
@@ -799,6 +875,7 @@ function MapaCivil() {
 
       <ReactFlow
         nodeTypes={nodeTypes}
+        translateExtent={[[PASO_X - 60, -Infinity], [Infinity, Infinity]]}
         nodes={[...nodosFondo, ...nodes.map(n => {
           const isTarget = hoverNode && correlativasVisibles.some(e => e.source === hoverNode && e.target === n.id);
           const isSource = ancestors.has(n.id);
